@@ -1,0 +1,30 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter and notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs and local settings
+*.log
+.env
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Data outputs that are usually generated
+data/processed/*.csv
+data/processed/*.parquet
