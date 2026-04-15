@@ -13,19 +13,10 @@ Turismo Hub/
 │   └── processed/          # Dados limpos e transformados
 ├── docs/                   # Documentacao do projeto
 ├── src/
-│   └── analysis/           # Scripts de limpeza e indicadores
-│       ├── clean_data.py
-│       └── indicators.py
 ├── .gitignore
 ├── requirements.txt
 └── README.md
 ```
-
-## Fluxo inicial
-
-1. Coloque arquivos de origem em `data/raw/`.
-2. Execute `src/analysis/clean_data.py` para gerar dados tratados em `data/processed/`.
-3. Execute `src/analysis/indicators.py` para gerar indicadores basicos.
 
 ## Como executar
 
@@ -33,18 +24,5 @@ Turismo Hub/
 2. Instale as dependencias:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements
 ```
-
-3. Rode os scripts:
-
-```bash
-python src/analysis/clean_data.py
-python src/analysis/indicators.py
-```
-
-## Boas praticas adotadas
-
-- Separacao clara entre dados brutos e processados.
-- Scripts analiticos organizados em `src/analysis`.
-- Estrutura minima, mas escalavel para novas etapas de analytics.
