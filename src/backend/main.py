@@ -62,6 +62,13 @@ class AtualizarDestinatariosRequest(BaseModel):
 class ResponderFormularioRequest(BaseModel):
     usuario_id: int
 
+class ConfigScrapingRequest(BaseModel):
+    repetir_a_cada: int
+    unidade_tempo: str
+    dias_semana: List[str] = []
+    dia_mes: int = 1
+    empresas_ids: List[int] = []
+
 # ----------------------------------------------------
 # 0. ROTA DE LOGIN
 # ----------------------------------------------------
@@ -429,3 +436,63 @@ def ver_status_formulario(formulario_id: int):
         return status_lista
     except Exception as e:
         raise HTTPException(status_code=500, detail="Erro ao buscar status do formulário.")
+    
+# ----------------------------------------------------
+# 12. ROTAS DO ROBÔ DE SCRAPING
+# ----------------------------------------------------
+@app.post("/api/admin/scraping/config")
+def salvar_config_scraping(req: ConfigScrapingRequest):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # 1. Limpa a configuração antiga e salva a nova
+        cursor.execute("DELETE FROM scraping_config")
+        
+        # Transforma a lista do React ['seg', 'ter'] em uma string "seg,ter"
+        dias_str = ",".join(req.dias_semana) if req.dias_semana else None
+        
+        cursor.execute(
+            "INSERT INTO scraping_config (repetir_a_cada, unidade_tempo, dias_semana, dia_mes) VALUES (%s, %s, %s, %s)",
+            (req.repetir_a_cada, req.unidade_tempo, dias_str, req.dia_mes)
+        )
+        
+        # 2. Atualiza a lista de empresas alvo
+        cursor.execute("DELETE FROM scraping_empresas_alvo")
+        for emp_id in req.empresas_ids:
+            cursor.execute(
+                "INSERT INTO scraping_empresas_alvo (empresa_id) VALUES (%s)", 
+                (emp_id,)
+            )
+            
+        conexao.commit()
+        cursor.close()
+        conexao.close()
+        
+        return {"status": "Sucesso", "mensagem": "Configurações do robô salvas com sucesso!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/admin/scraping/logs")
+def listar_logs_scraping():
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # Puxa os últimos 50 logs, do mais recente para o mais antigo
+        cursor.execute("""
+            SELECT id, TO_CHAR(data_execucao, 'DD/MM/YYYY HH24:MI'), status, detalhes 
+            FROM scraping_logs 
+            ORDER BY id DESC LIMIT 50
+        """)
+        
+        logs = [
+            {"id": l[0], "data": l[1], "status": l[2], "detalhes": l[3]}
+            for l in cursor.fetchall()
+        ]
+        
+        cursor.close()
+        conexao.close()
+        return logs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao buscar logs.")
