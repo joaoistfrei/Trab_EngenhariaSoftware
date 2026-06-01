@@ -1,7 +1,6 @@
-pandas>=2.0.0
-numpy>=1.24.0
 fastapi
 uvicorn
 psycopg2-binary
 passlib[bcrypt]
-pyjwt
+bcrypt==3.2.2
+pydantic
