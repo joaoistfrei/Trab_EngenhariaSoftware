@@ -40,7 +40,14 @@ class LoginRequest(BaseModel):
 class EmpresaCadastro(BaseModel):
     nome: str
     email: str
-    cnpj: str
+    cnpj: Optional[str] = None
+    url_booking: Optional[str] = None
+
+class EmpresaUpdate(BaseModel):
+    nome: str
+    email: str
+    cnpj: Optional[str] = None
+    url_booking: Optional[str] = None
 
 class ResetSenhaRequest(BaseModel):
     usuario_id: int
@@ -127,8 +134,8 @@ def cadastrar_empresa(empresa: EmpresaCadastro):
         cursor = conexao.cursor()
         
         cursor.execute(
-            "INSERT INTO usuarios (nome, email, senha, role, cnpj) VALUES (%s, %s, %s, 'empresario', %s)",
-            (empresa.nome, empresa.email, senha_criptografada, empresa.cnpj)
+            "INSERT INTO usuarios (nome, email, senha, role, cnpj, url_booking) VALUES (%s, %s, %s, 'empresario', %s, %s)",
+            (empresa.nome, empresa.email, senha_criptografada, empresa.cnpj, empresa.url_booking)
         )
         conexao.commit()
         cursor.close()
@@ -188,8 +195,11 @@ def listar_empresas():
         cursor = conexao.cursor()
         
         # Busca todas as contas que são de empresários
-        cursor.execute("SELECT id, nome, email, cnpj FROM usuarios WHERE role = 'empresario' ORDER BY id DESC")
-        empresas = [{"id": linha[0], "nome": linha[1], "email": linha[2], "cnpj": linha[3]} for linha in cursor.fetchall()]
+        cursor.execute("SELECT id, nome, email, cnpj, url_booking FROM usuarios WHERE role = 'empresario' ORDER BY id DESC")
+        empresas = [
+            {"id": l[0], "nome": l[1], "email": l[2], "cnpj": l[3], "url_booking": l[4]} 
+            for l in cursor.fetchall()
+        ]
         
         cursor.close()
         conexao.close()
@@ -496,3 +506,26 @@ def listar_logs_scraping():
         return logs
     except Exception as e:
         raise HTTPException(status_code=500, detail="Erro ao buscar logs.")
+    
+# ----------------------------------------------------
+# 13. ROTA PARA EDITAR DADOS DA EMPRESA
+# ----------------------------------------------------
+@app.put("/api/admin/empresas/{empresa_id}")
+def editar_empresa(empresa_id: int, emp: EmpresaUpdate):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        cursor.execute("""
+            UPDATE usuarios 
+            SET nome = %s, email = %s, cnpj = %s, url_booking = %s 
+            WHERE id = %s AND role = 'empresario'
+        """, (emp.nome, emp.email, emp.cnpj, emp.url_booking, empresa_id))
+        
+        conexao.commit()
+        cursor.close()
+        conexao.close()
+        
+        return {"status": "Sucesso", "mensagem": "Dados atualizados com sucesso!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao atualizar a empresa.")

@@ -11,6 +11,8 @@ export default function AdminDashboard() {
   const [nomeEmpresa, setNomeEmpresa] = useState('');
   const [emailEmpresa, setEmailEmpresa] = useState('');
   const [cnpjEmpresa, setCnpjEmpresa] = useState('');
+  const [urlBookingEmpresa, setUrlBookingEmpresa] = useState(''); // NOVO: Para cadastro
+  
   const [senhaGerada, setSenhaGerada] = useState(null);
   const [emailCadastrado, setEmailCadastrado] = useState('');
   const [mensagemEmpresa, setMensagemEmpresa] = useState('');
@@ -18,6 +20,13 @@ export default function AdminDashboard() {
   const [listaEmpresas, setListaEmpresas] = useState([]);
   const [senhaResetada, setSenhaResetada] = useState(null);
   const [empresaResetada, setEmpresaResetada] = useState('');
+
+  const [modalEdicaoEmpresaAberto, setModalEdicaoEmpresaAberto] = useState(false);
+  const [empresaSendoEditada, setEmpresaSendoEditada] = useState(null);
+  const [editNome, setEditNome] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editCnpj, setEditCnpj] = useState('');
+  const [editUrlBooking, setEditUrlBooking] = useState('');
 
   // ================= ESTADOS DE FORMULÁRIOS =================
   const [tituloForm, setTituloForm] = useState('');
@@ -94,13 +103,18 @@ export default function AdminDashboard() {
     try {
       const resposta = await fetch('http://localhost:8000/api/admin/cadastrar-empresa', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nome: nomeEmpresa, email: emailEmpresa, cnpj: cnpjEmpresa }),
+        body: JSON.stringify({ 
+          nome: nomeEmpresa, 
+          email: emailEmpresa, 
+          cnpj: cnpjEmpresa,
+          url_booking: urlBookingEmpresa // <--- Enviando para o Python
+        }),
       });
       const dados = await resposta.json();
       if (resposta.ok) {
         setMensagemEmpresa(dados.mensagem);
         setSenhaGerada(dados.senha_gerada); setEmailCadastrado(emailEmpresa);
-        setNomeEmpresa(''); setEmailEmpresa(''); setCnpjEmpresa('');
+        setNomeEmpresa(''); setEmailEmpresa(''); setCnpjEmpresa(''); setUrlBookingEmpresa('');
         carregarEmpresas();
       } else {
         setErroEmpresa(dados.detail || 'Erro ao cadastrar.');
@@ -110,6 +124,40 @@ export default function AdminDashboard() {
     }
   };
 
+  // --- NOVAS FUNÇÕES DE EDIÇÃO DE EMPRESA ---
+  const abrirModalEdicaoEmpresa = (empresa) => {
+    setEmpresaSendoEditada(empresa);
+    setEditNome(empresa.nome);
+    setEditEmail(empresa.email);
+    setEditCnpj(empresa.cnpj || '');
+    setEditUrlBooking(empresa.url_booking || '');
+    setModalEdicaoEmpresaAberto(true);
+  };
+
+  const handleSalvarEdicaoEmpresa = async (e) => {
+    e.preventDefault();
+    try {
+      const resposta = await fetch(`http://localhost:8000/api/admin/empresas/${empresaSendoEditada.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nome: editNome,
+          email: editEmail,
+          cnpj: editCnpj,
+          url_booking: editUrlBooking
+        }),
+      });
+      
+      if (resposta.ok) {
+        setModalEdicaoEmpresaAberto(false);
+        carregarEmpresas(); // Recarrega a tabela para mostrar os novos dados
+      } else {
+        alert("Erro ao atualizar os dados da empresa.");
+      }
+    } catch (error) {
+      alert("Erro de conexão com o servidor.");
+    }
+  };
   const handleCadastrarFormulario = async (e) => {
     e.preventDefault();
     setErroForm(''); setMensagemForm('');
@@ -254,7 +302,32 @@ export default function AdminDashboard() {
 
   const handleSalvarConfigScraping = async (e) => {
     e.preventDefault();
-    setMensagemScraping('Configuração salva! O backend assumirá a partir daqui. (Função em desenvolvimento)');
+    setMensagemScraping('Salvando configurações...');
+    
+    try {
+      const resposta = await fetch('http://localhost:8000/api/admin/scraping/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repetir_a_cada: parseInt(repetirACada),
+          unidade_tempo: unidadeTempo,
+          dias_semana: diasSelecionados,
+          dia_mes: parseInt(diaDoMes),
+          empresas_ids: empresasScraping
+        }),
+      });
+      
+      const dados = await resposta.json();
+      if (resposta.ok) {
+        setMensagemScraping(dados.mensagem);
+        // Remove a mensagem verde depois de 3 segundos
+        setTimeout(() => setMensagemScraping(''), 3000);
+      } else {
+        setMensagemScraping('Erro ao salvar configurações.');
+      }
+    } catch (error) {
+      setMensagemScraping('Erro de conexão com o servidor.');
+    }
   };
 
   return (
@@ -357,30 +430,69 @@ export default function AdminDashboard() {
         
         {/* ================= ABA EMPRESAS ================= */}
         {abaAtiva === 'empresas' && (
-          <div>
+          <div className="relative">
             <h1 className="text-3xl font-bold text-gray-800">Gerenciar Empresas</h1>
-            <div className="mt-8 bg-white p-6 rounded-lg shadow max-w-2xl">
+            
+            {/* NOVO: Modal Flutuante de Edição de Empresa */}
+            {modalEdicaoEmpresaAberto && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+                <div className="bg-white p-6 rounded-lg shadow-xl w-[500px]">
+                  <h2 className="text-xl font-bold text-gray-800 mb-4">Editar Empresa</h2>
+                  <form onSubmit={handleSalvarEdicaoEmpresa} className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium">Nome da Empresa</label>
+                      <input type="text" value={editNome} onChange={(e) => setEditNome(e.target.value)} required className="mt-1 w-full rounded border p-2"/>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium">CNPJ</label>
+                      <input type="text" value={editCnpj} onChange={(e) => setEditCnpj(e.target.value)} className="mt-1 w-full rounded border p-2"/>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium">E-mail</label>
+                      <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} required className="mt-1 w-full rounded border p-2"/>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-blue-800">Link do Booking (Para o Robô)</label>
+                      <input type="url" value={editUrlBooking} onChange={(e) => setEditUrlBooking(e.target.value)} placeholder="https://www.booking.com/hotel/..." className="mt-1 w-full rounded border border-blue-300 bg-blue-50 p-2"/>
+                    </div>
+                    <div className="flex justify-end space-x-2 pt-4">
+                      <button type="button" onClick={() => setModalEdicaoEmpresaAberto(false)} className="px-4 py-2 bg-gray-300 rounded font-semibold">Cancelar</button>
+                      <button type="submit" className="px-4 py-2 bg-blue-900 text-white rounded font-semibold">Salvar Alterações</button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* Bloco de Cadastro */}
+            <div className="mt-8 bg-white p-6 rounded-lg shadow max-w-4xl">
               <h2 className="text-xl font-semibold text-gray-800 mb-4">Cadastrar Nova Empresa</h2>
               <form onSubmit={handleCadastrarEmpresa} className="space-y-4">
                 {erroEmpresa && <div className="p-3 bg-red-100 text-red-700 rounded border">{erroEmpresa}</div>}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                   <div>
                     <label className="block text-sm font-medium">Nome</label>
-                    <input type="text" value={nomeEmpresa} onChange={(e) => setNomeEmpresa(e.target.value)} required className="mt-1 block w-full rounded border p-2"/>
+                    <input type="text" value={nomeEmpresa} onChange={(e) => setNomeEmpresa(e.target.value)} required className="mt-1 w-full rounded border p-2"/>
                   </div>
                   <div>
                     <label className="block text-sm font-medium">CNPJ</label>
-                    <input type="text" value={cnpjEmpresa} onChange={(e) => setCnpjEmpresa(e.target.value)} required className="mt-1 block w-full rounded border p-2" placeholder="00.000.000/0000-00"/>
+                    <input type="text" value={cnpjEmpresa} onChange={(e) => setCnpjEmpresa(e.target.value)} required className="mt-1 w-full rounded border p-2"/>
                   </div>
                   <div>
                     <label className="block text-sm font-medium">E-mail</label>
-                    <input type="email" value={emailEmpresa} onChange={(e) => setEmailEmpresa(e.target.value)} required className="mt-1 block w-full rounded border p-2"/>
+                    <input type="email" value={emailEmpresa} onChange={(e) => setEmailEmpresa(e.target.value)} required className="mt-1 w-full rounded border p-2"/>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-blue-800">Link do Booking</label>
+                    <input type="url" value={urlBookingEmpresa} onChange={(e) => setUrlBookingEmpresa(e.target.value)} className="mt-1 w-full rounded border border-blue-300 bg-blue-50 p-2" placeholder="Opcional"/>
                   </div>
                 </div>
                 <button type="submit" className="bg-blue-900 text-white px-4 py-2 rounded font-semibold hover:bg-blue-800">Cadastrar Empresa</button>
               </form>
             </div>
 
+            {/* (Mantenha os alertas verde e azul de senha gerada/resetada que você já tinha aqui) */}
+            
             {senhaGerada && (
               <div className="mt-6 bg-green-50 border-l-4 border-green-500 p-6 rounded-r-lg shadow max-w-2xl">
                 <h3 className="text-lg font-bold text-green-800">🎉 Empresa cadastrada com sucesso!</h3>
@@ -392,32 +504,39 @@ export default function AdminDashboard() {
             {senhaResetada && (
               <div className="mt-6 bg-blue-50 border-l-4 border-blue-500 p-6 rounded-r-lg shadow max-w-2xl">
                 <h3 className="text-lg font-bold text-blue-800">🔄 Senha de {empresaResetada} resetada!</h3>
-                <p className="mt-2 text-gray-800">Copie a nova senha abaixo e envie para a empresa.</p>
-                <p className="text-xl mt-2 text-gray-800">
-                  <strong>Nova Senha Provisória:</strong> <span className="bg-yellow-200 px-2 py-1 rounded">{senhaResetada}</span>
-                </p>
+                <p className="text-xl mt-2 text-gray-800"><strong>Nova Senha Provisória:</strong> <span className="bg-yellow-200 px-2 py-1 rounded">{senhaResetada}</span></p>
               </div>
             )}
 
-            <div className="mt-8 bg-white rounded-lg shadow overflow-hidden max-w-4xl">
+            {/* Tabela de Empresas */}
+            <div className="mt-8 bg-white rounded-lg shadow overflow-x-auto">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Empresa</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">CNPJ</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">E-mail</th>
+                    <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Booking</th>
                     <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Ações</th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
                   {listaEmpresas.map((emp) => (
                     <tr key={emp.id}>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{emp.nome}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{emp.nome} <br/><span className="text-xs text-gray-500 font-normal">{emp.email}</span></td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{emp.cnpj || '-'}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{emp.email}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
+                      
+                      {/* Ícone de check se a empresa tiver URL cadastrada */}
+                      <td className="px-6 py-4 whitespace-nowrap text-center">
+                        {emp.url_booking ? (
+                          <span className="text-green-600 font-bold" title="URL Configurada">✓ Sim</span>
+                        ) : (
+                          <span className="text-red-400 text-xs" title="URL Pendente">Falta link</span>
+                        )}
+                      </td>
+
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-3">
+                        <button onClick={() => abrirModalEdicaoEmpresa(emp)} className="text-orange-600 hover:text-orange-900 font-bold">Editar Dados</button>
                         <button onClick={() => handleResetarSenha(emp.id, emp.nome)} className="text-blue-600 hover:text-blue-900">Resetar Senha</button>
-                        {/* NOVO BOTÃO DE EXCLUIR AQUI */}
                         <button onClick={() => handleExcluirEmpresa(emp.id, emp.nome)} className="text-red-600 hover:text-red-900 font-bold">Excluir</button>
                       </td>
                     </tr>
