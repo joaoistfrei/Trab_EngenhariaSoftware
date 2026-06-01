@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from passlib.context import CryptContext
 import psycopg2
 from fastapi.middleware.cors import CORSMiddleware
+from typing import Optional, List
 
 app = FastAPI()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -33,12 +34,13 @@ def gerar_senha_aleatoria(tamanho=8):
 
 # Modelos de dados para as requisições
 class LoginRequest(BaseModel):
-    email: str
+    identificacao: str
     senha: str
 
 class EmpresaCadastro(BaseModel):
     nome: str
     email: str
+    cnpj: str
 
 class ResetSenhaRequest(BaseModel):
     usuario_id: int
@@ -47,6 +49,18 @@ class AlterarSenhaRequest(BaseModel):
     usuario_id: int
     senha_atual: str
     nova_senha: str
+
+class FormularioCadastro(BaseModel):
+    titulo: str
+    descricao: Optional[str] = None
+    url_google_forms: str
+    empresas_ids: List[int] = []
+
+class AtualizarDestinatariosRequest(BaseModel):
+    empresas_ids: List[int]
+
+class ResponderFormularioRequest(BaseModel):
+    usuario_id: int
 
 # ----------------------------------------------------
 # 0. ROTA DE LOGIN
@@ -57,33 +71,37 @@ def login(dados: LoginRequest):
         conexao = psycopg2.connect(**DB_CONFIG)
         cursor = conexao.cursor()
         
-        cursor.execute("SELECT id, nome, senha, role FROM usuarios WHERE email = %s", (dados.email,))
+        # Busca por E-mail OU por CNPJ
+        cursor.execute(
+            "SELECT id, nome, senha, role, email, cnpj FROM usuarios WHERE email = %s OR cnpj = %s", 
+            (dados.identificacao, dados.identificacao)
+        )
         usuario = cursor.fetchone()
         
         cursor.close()
         conexao.close()
         
         if not usuario:
-            raise HTTPException(status_code=401, detail="E-mail ou senha incorretos")
+            raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
             
-        db_id, db_nome, db_senha, db_role = usuario
+        db_id, db_nome, db_senha, db_role, db_email, db_cnpj = usuario
         
-        # Como o admin foi criado com senha em texto puro no primeiro teste
-        # e as empresas terão senha criptografada pelo bcrypt, fazemos dupla checagem
         senha_valida = False
-        if db_senha.startswith('$2b$'): # É um hash do bcrypt
+        if db_senha.startswith('$2b$'):
             senha_valida = pwd_context.verify(dados.senha, db_senha)
-        else: # É texto puro
+        else:
             senha_valida = (dados.senha == db_senha)
             
         if not senha_valida:
-            raise HTTPException(status_code=401, detail="E-mail ou senha incorretos")
+            raise HTTPException(status_code=401, detail="Usuário ou senha incorretos")
             
         return {
             "status": "Sucesso",
             "nome": db_nome,
             "role": db_role,
-            "usuario_id": db_id
+            "usuario_id": db_id,
+            "email": db_email,
+            "cnpj": db_cnpj
         }
         
     except psycopg2.Error as e:
@@ -102,8 +120,8 @@ def cadastrar_empresa(empresa: EmpresaCadastro):
         cursor = conexao.cursor()
         
         cursor.execute(
-            "INSERT INTO usuarios (nome, email, senha, role) VALUES (%s, %s, %s, 'empresario')",
-            (empresa.nome, empresa.email, senha_criptografada)
+            "INSERT INTO usuarios (nome, email, senha, role, cnpj) VALUES (%s, %s, %s, 'empresario', %s)",
+            (empresa.nome, empresa.email, senha_criptografada, empresa.cnpj)
         )
         conexao.commit()
         cursor.close()
@@ -163,8 +181,8 @@ def listar_empresas():
         cursor = conexao.cursor()
         
         # Busca todas as contas que são de empresários
-        cursor.execute("SELECT id, nome, email FROM usuarios WHERE role = 'empresario' ORDER BY id DESC")
-        empresas = [{"id": linha[0], "nome": linha[1], "email": linha[2]} for linha in cursor.fetchall()]
+        cursor.execute("SELECT id, nome, email, cnpj FROM usuarios WHERE role = 'empresario' ORDER BY id DESC")
+        empresas = [{"id": linha[0], "nome": linha[1], "email": linha[2], "cnpj": linha[3]} for linha in cursor.fetchall()]
         
         cursor.close()
         conexao.close()
@@ -210,3 +228,204 @@ def alterar_senha(dados: AlterarSenhaRequest):
         return {"status": "Sucesso", "mensagem": "Senha alterada com sucesso!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+# ----------------------------------------------------
+# 5. ROTA DE CADASTRO DE FORMULÁRIO (Para o Admin)
+# ----------------------------------------------------
+@app.post("/api/admin/formularios")
+def cadastrar_formulario(form: FormularioCadastro):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # 1. Salva o formulário e pega o ID gerado usando RETURNING id
+        cursor.execute(
+            "INSERT INTO formularios (titulo, descricao, url_google_forms) VALUES (%s, %s, %s) RETURNING id",
+            (form.titulo, form.descricao, form.url_google_forms)
+        )
+        formulario_id = cursor.fetchone()[0]
+        
+        # 2. Salva os vínculos na tabela muitos-para-muitos
+        if form.empresas_ids:
+            for empresa_id in form.empresas_ids:
+                cursor.execute(
+                    "INSERT INTO formulario_empresa (formulario_id, usuario_id) VALUES (%s, %s)",
+                    (formulario_id, empresa_id)
+                )
+                
+        conexao.commit()
+        cursor.close()
+        conexao.close()
+        
+        return {"status": "Sucesso", "mensagem": "Formulário vinculado com sucesso!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar o formulário: {str(e)}")
+
+# ----------------------------------------------------
+# 6. ROTA PARA LISTAR FORMULÁRIOS (Para Admin e Empresários)
+# ----------------------------------------------------
+@app.get("/api/formularios")
+def listar_formularios(usuario_id: Optional[int] = None):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        if usuario_id:
+            # Puxa os dados incluindo se já foi respondido (fe.respondido)
+            cursor.execute("""
+                SELECT f.id, f.titulo, f.descricao, f.url_google_forms, f.criado_em, fe.respondido 
+                FROM formularios f
+                JOIN formulario_empresa fe ON f.id = fe.formulario_id
+                WHERE fe.usuario_id = %s
+                ORDER BY f.id DESC
+            """, (usuario_id,))
+            formularios = [
+                {"id": l[0], "titulo": l[1], "descricao": l[2], "url_google_forms": l[3], "criado_em": l[4], "respondido": l[5]}
+                for l in cursor.fetchall()
+            ]
+        else:
+            cursor.execute("SELECT id, titulo, descricao, url_google_forms, criado_em FROM formularios ORDER BY id DESC")
+            formularios = [
+                {"id": l[0], "titulo": l[1], "descricao": l[2], "url_google_forms": l[3], "criado_em": l[4]}
+                for l in cursor.fetchall()
+            ]
+            
+        cursor.close()
+        conexao.close()
+        return formularios
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+# ----------------------------------------------------
+# 7. ROTA PARA BUSCAR DESTINATÁRIOS DE UM FORMULÁRIO
+# ----------------------------------------------------
+@app.get("/api/admin/formularios/{formulario_id}/empresas")
+def listar_empresas_do_formulario(formulario_id: int):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # Pega apenas os IDs das empresas que estão vinculadas a este formulário
+        cursor.execute("SELECT usuario_id FROM formulario_empresa WHERE formulario_id = %s", (formulario_id,))
+        empresas_ids = [linha[0] for linha in cursor.fetchall()]
+        
+        cursor.close()
+        conexao.close()
+        
+        return empresas_ids
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao buscar destinatários.")
+
+# ----------------------------------------------------
+# 8. ROTA PARA ATUALIZAR DESTINATÁRIOS DE UM FORMULÁRIO
+# ----------------------------------------------------
+@app.put("/api/admin/formularios/{formulario_id}/empresas")
+def atualizar_empresas_do_formulario(formulario_id: int, req: AtualizarDestinatariosRequest):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # Primeiro, apagamos todos os vínculos antigos desse formulário
+        cursor.execute("DELETE FROM formulario_empresa WHERE formulario_id = %s", (formulario_id,))
+        
+        # Depois, inserimos a lista nova inteira
+        if req.empresas_ids:
+            for empresa_id in req.empresas_ids:
+                cursor.execute(
+                    "INSERT INTO formulario_empresa (formulario_id, usuario_id) VALUES (%s, %s)",
+                    (formulario_id, empresa_id)
+                )
+                
+        conexao.commit()
+        cursor.close()
+        conexao.close()
+        
+        return {"status": "Sucesso", "mensagem": "Destinatários atualizados com sucesso!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao atualizar destinatários.")
+    
+# ----------------------------------------------------
+# 9. ROTA PARA MARCAR FORMULÁRIO COMO RESPONDIDO
+# ----------------------------------------------------
+@app.put("/api/formularios/{formulario_id}/responder")
+def marcar_como_respondido(formulario_id: int, req: ResponderFormularioRequest):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        cursor.execute(
+            "UPDATE formulario_empresa SET respondido = TRUE WHERE formulario_id = %s AND usuario_id = %s",
+            (formulario_id, req.usuario_id)
+        )
+        conexao.commit()
+        
+        cursor.close()
+        conexao.close()
+        return {"status": "Sucesso", "mensagem": "Marcado como concluído!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao atualizar status.")
+    
+# ----------------------------------------------------
+# 10. ROTAS DE EXCLUSÃO (Admin)
+# ----------------------------------------------------
+@app.delete("/api/admin/empresas/{empresa_id}")
+def excluir_empresa(empresa_id: int):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # Apaga a empresa (o CASCADE no banco limpa a tabela formulario_empresa)
+        cursor.execute("DELETE FROM usuarios WHERE id = %s AND role = 'empresario'", (empresa_id,))
+        conexao.commit()
+        
+        cursor.close()
+        conexao.close()
+        return {"status": "Sucesso", "mensagem": "Empresa excluída com sucesso."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao excluir a empresa.")
+
+@app.delete("/api/admin/formularios/{formulario_id}")
+def excluir_formulario(formulario_id: int):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # Apaga o formulário (o CASCADE também limpa os vínculos automaticamente)
+        cursor.execute("DELETE FROM formularios WHERE id = %s", (formulario_id,))
+        conexao.commit()
+        
+        cursor.close()
+        conexao.close()
+        return {"status": "Sucesso", "mensagem": "Formulário excluído com sucesso."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao excluir o formulário.")
+    
+
+# ----------------------------------------------------
+# 11. ROTA DE STATUS DOS FORMULÁRIOS (Admin)
+# ----------------------------------------------------
+@app.get("/api/admin/formularios/{formulario_id}/status")
+def ver_status_formulario(formulario_id: int):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        
+        # Junta a tabela de vínculos com a de usuários para pegar o nome e o status
+        cursor.execute("""
+            SELECT u.nome, u.cnpj, fe.respondido 
+            FROM formulario_empresa fe
+            JOIN usuarios u ON fe.usuario_id = u.id
+            WHERE fe.formulario_id = %s
+            ORDER BY fe.respondido ASC, u.nome ASC
+        """, (formulario_id,))
+        
+        status_lista = [
+            {"nome_empresa": linha[0], "cnpj": linha[1], "respondido": linha[2]}
+            for linha in cursor.fetchall()
+        ]
+        
+        cursor.close()
+        conexao.close()
+        return status_lista
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Erro ao buscar status do formulário.")

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 
 export default function Login() {
   // 1. Estados para guardar o que o usuário digita
-  const [email, setEmail] = useState('');
+  const [identificacao, setIdentificacao] = useState('');
   const [senha, setSenha] = useState('');
   const [erro, setErro] = useState('');
   const navigate = useNavigate(); // Ferramenta para mudar de página
@@ -18,7 +18,7 @@ export default function Login() {
       const resposta = await fetch('http://localhost:8000/api/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, senha }),
+        body: JSON.stringify({ identificacao, senha }),
       });
 
       const dados = await resposta.json();
@@ -60,13 +60,13 @@ export default function Login() {
           )}
 
           <div>
-            <label className="block text-sm font-medium text-gray-700">E-mail</label>
+            <label className="block text-sm font-medium text-gray-700">E-mail ou CNPJ</label>
             <input 
-              type="email" 
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              type="text" 
+              value={identificacao}
+              onChange={(e) => setIdentificacao(e.target.value)}
               className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border"
-              placeholder="exemplo@olimpia.sp.gov.br"
+              placeholder="exemplo@email.com ou 00.000.000/0000-00"
               required
             />
           </div>
