@@ -32,6 +32,12 @@ CREATE TABLE logs_scraping (
     mensagem_erro TEXT
 );
 
+ALTER TABLE formulario_empresa ADD COLUMN respondido BOOLEAN DEFAULT FALSE;
+
+ALTER TABLE usuarios ADD COLUMN cnpj VARCHAR(20);
+
+ALTER TABLE usuarios ADD COLUMN url_booking TEXT;
+
 -- Parte relacionada ao web scraping
 -- 1. Tabela para guardar a regra de agendamento (Terá apenas 1 linha principal)
 CREATE TABLE scraping_config (
