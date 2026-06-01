@@ -34,6 +34,25 @@ export default function AdminDashboard() {
   const [empresasEdicao, setEmpresasEdicao] = useState([]);
   const [mensagemEdicao, setMensagemEdicao] = useState('');
 
+  // ================= ESTADOS DE SCRAPING =================
+  const [empresasScraping, setEmpresasScraping] = useState([]); 
+  const [repetirACada, setRepetirACada] = useState(1);
+  const [unidadeTempo, setUnidadeTempo] = useState('semana');
+  const [diasSelecionados, setDiasSelecionados] = useState([]);
+  const [diaDoMes, setDiaDoMes] = useState(1);
+  const [mensagemScraping, setMensagemScraping] = useState('');
+  
+  // Lista temporária de logs para vermos a tela funcionando
+  const [logsScraping, setLogsScraping] = useState([
+    { id: 1, data: '2026-06-01 03:00', status: 'Sucesso', detalhes: '15 avaliações extraídas.' },
+    { id: 2, data: '2026-05-31 03:00', status: 'Falha', detalhes: 'Timeout ao conectar no Booking.' }
+  ]);
+
+  const diasSemana = [
+    { id: 'dom', label: 'D' }, { id: 'seg', label: 'S' }, { id: 'ter', label: 'T' },
+    { id: 'qua', label: 'Q' }, { id: 'qui', label: 'Q' }, { id: 'sex', label: 'S' }, { id: 'sab', label: 'S' }
+  ];
+
   const sair = () => {
     localStorage.removeItem('usuario');
     navigate('/');
@@ -228,6 +247,16 @@ export default function AdminDashboard() {
     else setEmpresasEdicao([]);
   };
 
+  const lidarComSelecionarTodasScraping = (e) => {
+    if (e.target.checked) setEmpresasScraping(listaEmpresas.map(emp => emp.id));
+    else setEmpresasScraping([]);
+  };
+
+  const handleSalvarConfigScraping = async (e) => {
+    e.preventDefault();
+    setMensagemScraping('Configuração salva! O backend assumirá a partir daqui. (Função em desenvolvimento)');
+  };
+
   return (
     <div className="flex h-screen bg-gray-100 relative">
       {/* Modal de Edição (Mantido Igual) */}
@@ -316,6 +345,9 @@ export default function AdminDashboard() {
         <nav className="flex-1 p-4 space-y-2">
           <button onClick={() => setAbaAtiva('empresas')} className={`w-full text-left p-2 rounded ${abaAtiva === 'empresas' ? 'bg-blue-800 font-semibold' : 'hover:bg-blue-800'}`}>Gerenciar Empresas</button>
           <button onClick={() => setAbaAtiva('formularios')} className={`w-full text-left p-2 rounded ${abaAtiva === 'formularios' ? 'bg-blue-800 font-semibold' : 'hover:bg-blue-800'}`}>Meus Formulários</button>
+          <button onClick={() => setAbaAtiva('scraping')} className={`w-full text-left p-2 rounded ${abaAtiva === 'scraping' ? 'bg-blue-800 font-semibold' : 'hover:bg-blue-800'}`}>
+            Robô de Dados (Scraping)
+          </button>
         </nav>
         <button onClick={sair} className="p-4 bg-red-600 hover:bg-red-700 font-bold">Sair</button>
       </aside>
@@ -464,6 +496,155 @@ export default function AdminDashboard() {
               </table>
             </div>
 
+          </div>
+        )}
+
+        {/* ================= ABA DE SCRAPING ================= */}
+        {abaAtiva === 'scraping' && (
+          <div>
+            <h1 className="text-3xl font-bold text-gray-800">Automação de Web Scraping</h1>
+            <p className="text-gray-600 mt-2">
+              Busca automática de dados no Booking.
+            </p>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mt-8">
+              
+              {/* COLUNA ESQUERDA: CONFIGURAÇÕES */}
+              <div className="bg-white p-6 rounded-lg shadow">
+                <h2 className="text-xl font-semibold text-gray-800 mb-6 border-b pb-2">Agendamento do Robô</h2>
+                
+                <form onSubmit={handleSalvarConfigScraping} className="space-y-6">
+                  
+                  {/* CALENDÁRIO */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Frequência de Execução</label>
+                    <div className="flex items-center space-x-3 mb-4 bg-gray-50 p-4 rounded border">
+                      <span className="text-gray-800 font-medium">Repetir a cada:</span>
+                      <input 
+                        type="number" min="1" value={repetirACada} onChange={(e) => setRepetirACada(e.target.value)}
+                        className="w-16 border border-gray-400 rounded p-1 text-center"
+                      />
+                      <select 
+                        value={unidadeTempo} onChange={(e) => setUnidadeTempo(e.target.value)}
+                        className="border border-gray-400 rounded p-1"
+                      >
+                        <option value="dia">dia(s)</option>
+                        <option value="semana">semana(s)</option>
+                        <option value="mes">mês(es)</option>
+                      </select>
+                    </div>
+
+                    {unidadeTempo === 'semana' && (
+                      <div className="bg-gray-50 p-4 rounded border mt-2">
+                        <span className="text-gray-800 font-medium block mb-3">Dias da Semana:</span>
+                        <div className="flex space-x-2">
+                          {diasSemana.map((dia) => (
+                            <button
+                              key={dia.id}
+                              type="button"
+                              onClick={() => setDiasSelecionados(diasSelecionados.includes(dia.id) 
+                                ? diasSelecionados.filter(d => d !== dia.id) 
+                                : [...diasSelecionados, dia.id])}
+                              className={`w-10 h-10 rounded-full font-bold transition-colors flex items-center justify-center
+                                ${diasSelecionados.includes(dia.id) ? 'bg-blue-600 text-white shadow' : 'bg-gray-300 text-gray-700 hover:bg-gray-400'}`}
+                            >
+                              {dia.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {unidadeTempo === 'mes' && (
+                      <div className="bg-gray-50 p-4 rounded border mt-2">
+                        <span className="text-gray-800 font-medium block mb-3">Dia do Mês:</span>
+                        <select 
+                          value={diaDoMes} 
+                          onChange={(e) => setDiaDoMes(e.target.value)}
+                          className="border border-gray-400 rounded p-2 bg-white w-full max-w-[200px]"
+                        >
+                          {/* Gera opções do dia 1 ao 31 automaticamente */}
+                          {Array.from({ length: 31 }, (_, i) => i + 1).map(dia => (
+                            <option key={dia} value={dia}>Dia {dia}</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-gray-500 mt-2 italic">
+                          *Se o mês escolhido não tiver este dia (ex: 31 de fevereiro), o robô rodará automaticamente no último dia disponível do mês.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* SELEÇÃO DE EMPRESAS */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Monitorar quais empresas no Booking?</label>
+                    <div className="mb-2 pb-2 border-b">
+                      <label className="flex items-center space-x-2 cursor-pointer font-semibold text-blue-900">
+                        <input type="checkbox" className="rounded text-blue-600" checked={empresasScraping.length === listaEmpresas.length && listaEmpresas.length > 0} onChange={lidarComSelecionarTodasScraping} />
+                        <span>Selecionar Todas as Empresas</span>
+                      </label>
+                    </div>
+                    <div className="max-h-40 overflow-y-auto border border-gray-300 rounded-md p-3 bg-gray-50 space-y-2">
+                      {listaEmpresas.map((emp) => (
+                        <label key={emp.id} className="flex items-center space-x-2 cursor-pointer">
+                          <input type="checkbox" className="rounded text-blue-600" checked={empresasScraping.includes(emp.id)} onChange={(e) => {
+                              if (e.target.checked) setEmpresasScraping([...empresasScraping, emp.id]);
+                              else setEmpresasScraping(empresasScraping.filter(id => id !== emp.id));
+                            }} />
+                          <span className="text-sm text-gray-800">{emp.nome}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {mensagemScraping && <div className="p-3 bg-green-100 text-green-700 rounded border font-semibold">{mensagemScraping}</div>}
+
+                  <button type="submit" className="w-full bg-blue-900 text-white px-4 py-3 rounded-md font-bold hover:bg-blue-800 shadow-md">
+                    Salvar Configurações do Robô
+                  </button>
+                </form>
+              </div>
+
+              {/* COLUNA DIREITA: LOGS E STATUS */}
+              <div>
+                <div className="bg-white p-6 rounded-lg shadow mb-6">
+                  <h2 className="text-xl font-semibold text-gray-800 mb-4 border-b pb-2">Status do Serviço</h2>
+                  <div className="flex items-center space-x-3">
+                    <div className="w-4 h-4 bg-green-500 rounded-full animate-pulse"></div>
+                    <span className="font-semibold text-gray-700">Robô Ativo (Aguardando próximo ciclo)</span>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-lg shadow overflow-hidden">
+                  <div className="p-4 bg-gray-50 border-b">
+                    <h2 className="text-lg font-semibold text-gray-800">Últimas Execuções (Logs)</h2>
+                  </div>
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-100">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Data/Hora</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Detalhes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {logsScraping.map((log) => (
+                        <tr key={log.id}>
+                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{log.data}</td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className={`px-2 py-1 text-xs font-bold rounded-full ${log.status === 'Sucesso' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                              {log.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-500">{log.detalhes}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
           </div>
         )}
 
