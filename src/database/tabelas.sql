@@ -31,3 +31,27 @@ CREATE TABLE logs_scraping (
     registros_coletados INT DEFAULT 0,
     mensagem_erro TEXT
 );
+
+-- Parte relacionada ao web scraping
+-- 1. Tabela para guardar a regra de agendamento (Terá apenas 1 linha principal)
+CREATE TABLE scraping_config (
+    id SERIAL PRIMARY KEY,
+    repetir_a_cada INT NOT NULL,
+    unidade_tempo VARCHAR(20) NOT NULL,
+    dias_semana VARCHAR(50), -- Guardaremos como texto, ex: "seg,qua,sex"
+    dia_mes INT
+);
+
+-- 2. Tabela para guardar QUAIS empresas o robô vai buscar os dados
+CREATE TABLE scraping_empresas_alvo (
+    empresa_id INT REFERENCES usuarios(id) ON DELETE CASCADE,
+    PRIMARY KEY (empresa_id)
+);
+
+-- 3. Tabela para guardar os relatórios de Sucesso/Falha do robô
+CREATE TABLE scraping_logs (
+    id SERIAL PRIMARY KEY,
+    data_execucao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    status VARCHAR(20) NOT NULL,
+    detalhes TEXT
+);
