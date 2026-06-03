@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+
+# Frontend
+src/frontend/node_modules
+src/frontend/dist
+src/frontend/.vite
+
+# Python
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/.venv
+**/venv
+**/.pytest_cache
+**/.mypy_cache
+
+# Go (recompilamos no stage)
+src/scraper/scraper
+
+# Outputs do scraper
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Docs internos
+CLAUDE.md
+.claude

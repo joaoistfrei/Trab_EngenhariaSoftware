@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: turismo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: olimpia_turismo
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: chimbica
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+      # Scripts em /docker-entrypoint-initdb.d/ rodam só na 1ª inicialização
+      # (quando o volume `dbdata` ainda está vazio). Pra forçar re-seed:
+      # docker compose down -v && docker compose up
+      - ./src/database/tabelas.sql:/docker-entrypoint-initdb.d/01-tabelas.sql:ro
+      - ./src/database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d olimpia_turismo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: src/backend/Dockerfile
+    container_name: turismo-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: olimpia_turismo
+      DB_USER: postgres
+      DB_PASSWORD: chimbica
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Chromium em container precisa de /dev/shm maior que o default de 64MB
+    shm_size: "1gb"
+    # Live reload do uvicorn enxergando o source montado de fora
+    command: ["uvicorn", "backend.main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./src/backend:/app/backend
+
+  frontend:
+    build:
+      context: ./src/frontend
+      dockerfile: Dockerfile
+    container_name: turismo-frontend
+    restart: unless-stopped
+    environment:
+      # Vite/chokidar precisa de polling pra detectar mudanças via bind mount
+      CHOKIDAR_USEPOLLING: "true"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./src/frontend:/app
+      # Volume anônimo mascarando node_modules pra não sobrescrever o do container
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  dbdata:

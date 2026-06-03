@@ -15,11 +15,11 @@ app = FastAPI()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 DB_CONFIG = {
-    "dbname": "olimpia_turismo",
-    "user": "postgres",
-    "password": "chimbica",
-    "host": "localhost",
-    "port": "5432"
+    "dbname":   os.getenv("DB_NAME",     "olimpia_turismo"),
+    "user":     os.getenv("DB_USER",     "postgres"),
+    "password": os.getenv("DB_PASSWORD", "chimbica"),
+    "host":     os.getenv("DB_HOST",     "localhost"),
+    "port":     os.getenv("DB_PORT",     "5432"),
 }
 
 # Permite que o frontend do React (porta 5173) converse com esta API
@@ -88,15 +88,18 @@ class ExecutarScrapingRequest(BaseModel):
     adultos: int = 2
 
 # Caminho do binário Go (compilado com `go build -o scraper .` em src/scraper/).
+# Em Docker, vem de /usr/local/bin/scraper via env SCRAPER_BIN.
 # Se o binário não existir, cai pra `go run .` no diretório do scraper.
 SCRAPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scraper"))
-SCRAPER_BIN = os.path.join(SCRAPER_DIR, "scraper")
+SCRAPER_BIN = os.getenv("SCRAPER_BIN", os.path.join(SCRAPER_DIR, "scraper"))
 
 def _rodar_scraper(url: str, checkin: str, checkout: str, adultos: int, timeout_seg: int = 120):
     """Invoca o scraper Go pra uma URL do Booking e devolve (dados_json_ou_None, stderr)."""
     if os.path.exists(SCRAPER_BIN) and os.access(SCRAPER_BIN, os.X_OK):
         cmd = [SCRAPER_BIN]
-        cwd = SCRAPER_DIR
+        # Binário não depende de arquivos relativos — não force cwd em diretório
+        # que pode não existir (caso típico em container).
+        cwd = SCRAPER_DIR if os.path.isdir(SCRAPER_DIR) else None
     else:
         cmd = ["go", "run", "."]
         cwd = SCRAPER_DIR
