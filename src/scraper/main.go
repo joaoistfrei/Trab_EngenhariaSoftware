@@ -87,11 +87,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	log("carregando %s", link)
-	html, estado, err := renderizar(browser, link, log)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "erro ao renderizar página do hotel:", err)
-		os.Exit(1)
+	// Se a data pedida não tiver disponibilidade, andamos 1 dia pra frente e
+	// tentamos de novo. O que interessa é o preço da diária — não a data
+	// específica. Teto pra evitar loop infinito quando o hotel está fechado.
+	const maxTentativas = 30
+	ciOriginal, coOriginal := ci, co
+	var html, estado string
+	for tentativa := 0; tentativa < maxTentativas; tentativa++ {
+		log("tentativa %d — carregando %s", tentativa+1, link)
+		html, estado, err = renderizar(browser, link, log)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "erro ao renderizar página do hotel:", err)
+			os.Exit(1)
+		}
+		if estado != "indisponivel" {
+			break
+		}
+		// Soma 1 dia em ci e co (preserva o número de noites)
+		ciT, _ := time.Parse("2006-01-02", ci)
+		coT, _ := time.Parse("2006-01-02", co)
+		ci = ciT.AddDate(0, 0, 1).Format("2006-01-02")
+		co = coT.AddDate(0, 0, 1).Format("2006-01-02")
+		link = comDatas(link, ci, co, *adultos)
+		log("sem disponibilidade, tentando %s → %s", ci, co)
 	}
 
 	nome := extrairNome(html)
@@ -112,11 +130,14 @@ func main() {
 	}
 	switch {
 	case errPreco != nil && estado == "indisponivel":
-		res.Observacao = "hotel sem disponibilidade nessas datas (página exibe 'Not available')"
+		res.Observacao = fmt.Sprintf("sem disponibilidade após %d tentativa(s) a partir de %s", maxTentativas, ciOriginal)
 	case errPreco != nil:
 		res.Observacao = "preço não localizado no HTML renderizado (layout pode ter mudado ou desafio anti-bot não resolvido)"
 	case noites > 0 && precoTotal != "":
 		res.PrecoDiaria = dividirPreco(precoTotal, noites)
+		if ci != ciOriginal {
+			res.Observacao = fmt.Sprintf("data ajustada: solicitado %s → %s, disponível a partir de %s → %s", ciOriginal, coOriginal, ci, co)
+		}
 	}
 
 	out, _ := json.MarshalIndent(res, "", "  ")
