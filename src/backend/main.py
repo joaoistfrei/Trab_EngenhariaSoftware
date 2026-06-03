@@ -1,5 +1,9 @@
 import string
 import secrets
+import subprocess
+import json
+import os
+from datetime import date, timedelta
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from passlib.context import CryptContext
@@ -75,6 +79,53 @@ class ConfigScrapingRequest(BaseModel):
     dias_semana: List[str] = []
     dia_mes: int = 1
     empresas_ids: List[int] = []
+
+class ExecutarScrapingRequest(BaseModel):
+    # Se vazio, usa as empresas configuradas em scraping_empresas_alvo
+    empresas_ids: List[int] = []
+    checkin: Optional[str] = None
+    checkout: Optional[str] = None
+    adultos: int = 2
+
+# Caminho do binário Go (compilado com `go build -o scraper .` em src/scraper/).
+# Se o binário não existir, cai pra `go run .` no diretório do scraper.
+SCRAPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scraper"))
+SCRAPER_BIN = os.path.join(SCRAPER_DIR, "scraper")
+
+def _rodar_scraper(url: str, checkin: str, checkout: str, adultos: int, timeout_seg: int = 120):
+    """Invoca o scraper Go pra uma URL do Booking e devolve (dados_json_ou_None, stderr)."""
+    if os.path.exists(SCRAPER_BIN) and os.access(SCRAPER_BIN, os.X_OK):
+        cmd = [SCRAPER_BIN]
+        cwd = SCRAPER_DIR
+    else:
+        cmd = ["go", "run", "."]
+        cwd = SCRAPER_DIR
+
+    cmd += [
+        "-url", url,
+        "-checkin", checkin,
+        "-checkout", checkout,
+        "-adultos", str(adultos),
+        "-timeout", str(max(30, timeout_seg - 10)),
+    ]
+
+    try:
+        proc = subprocess.run(
+            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout_seg
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"timeout de {timeout_seg}s estourado"
+    except FileNotFoundError as e:
+        return None, f"binário não encontrado: {e}"
+
+    # O scraper imprime JSON no stdout mesmo quando sai com código 1
+    # (ex.: hotel indisponível nas datas). Tentamos parsear primeiro.
+    if proc.stdout.strip():
+        try:
+            return json.loads(proc.stdout), proc.stderr.strip()
+        except json.JSONDecodeError:
+            pass
+    return None, (proc.stderr.strip() or f"sem saída (exit {proc.returncode})")
 
 # ----------------------------------------------------
 # 0. ROTA DE LOGIN
@@ -482,6 +533,76 @@ def salvar_config_scraping(req: ConfigScrapingRequest):
         return {"status": "Sucesso", "mensagem": "Configurações do robô salvas com sucesso!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Executa o scraper agora pra todas as empresas alvo (ou pra uma lista
+# explícita no body). Não grava nada em banco — devolve o JSON pro frontend
+# imprimir no console. Próximo passo: enviar pra Google Sheets.
+@app.post("/api/admin/scraping/executar")
+def executar_scraping(req: ExecutarScrapingRequest):
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+
+        if req.empresas_ids:
+            cursor.execute(
+                "SELECT id, nome, url_booking FROM usuarios "
+                "WHERE id = ANY(%s) AND role = 'empresario'",
+                (req.empresas_ids,),
+            )
+        else:
+            cursor.execute(
+                "SELECT u.id, u.nome, u.url_booking FROM usuarios u "
+                "JOIN scraping_empresas_alvo a ON a.empresa_id = u.id "
+                "WHERE u.role = 'empresario'"
+            )
+        empresas = cursor.fetchall()
+        cursor.close()
+        conexao.close()
+    except psycopg2.Error as e:
+        raise HTTPException(status_code=500, detail=f"Erro no banco: {str(e)}")
+
+    if not empresas:
+        raise HTTPException(
+            status_code=400,
+            detail="Nenhuma empresa para raspar. Selecione empresas na configuração do robô ou envie empresas_ids.",
+        )
+
+    # Datas padrão: amanhã / depois de amanhã
+    hoje = date.today()
+    ci = req.checkin or (hoje + timedelta(days=1)).isoformat()
+    co = req.checkout or (hoje + timedelta(days=2)).isoformat()
+
+    resultados = []
+    for emp_id, nome, url_booking in empresas:
+        if not url_booking:
+            resultados.append({
+                "empresa_id": emp_id,
+                "empresa_nome": nome,
+                "sucesso": False,
+                "erro": "empresa não tem url_booking cadastrada",
+                "dados": None,
+            })
+            continue
+
+        dados, erro = _rodar_scraper(url_booking, ci, co, req.adultos)
+        # Sucesso = veio um preço (diária ou total). A observação pode existir
+        # mesmo em sucesso (ex.: data ajustada porque a original tava lotada).
+        tem_preco = bool(dados and (dados.get("preco_diaria") or dados.get("preco_total")))
+        resultados.append({
+            "empresa_id": emp_id,
+            "empresa_nome": nome,
+            "sucesso": tem_preco,
+            "erro": erro or None,
+            "dados": dados,
+        })
+
+    return {
+        "checkin": ci,
+        "checkout": co,
+        "adultos": req.adultos,
+        "total": len(resultados),
+        "resultados": resultados,
+    }
 
 @app.get("/api/admin/scraping/logs")
 def listar_logs_scraping():

@@ -50,12 +50,11 @@ export default function AdminDashboard() {
   const [diasSelecionados, setDiasSelecionados] = useState([]);
   const [diaDoMes, setDiaDoMes] = useState(1);
   const [mensagemScraping, setMensagemScraping] = useState('');
-  
-  // Lista temporária de logs para vermos a tela funcionando
-  const [logsScraping, setLogsScraping] = useState([
-    { id: 1, data: '2026-06-01 03:00', status: 'Sucesso', detalhes: '15 avaliações extraídas.' },
-    { id: 2, data: '2026-05-31 03:00', status: 'Falha', detalhes: 'Timeout ao conectar no Booking.' }
-  ]);
+
+  // Resultado da última execução manual do robô (não persistido — só pra exibir
+  // na tela e dar console.log enquanto não temos integração com Google Sheets)
+  const [ultimaExecucao, setUltimaExecucao] = useState(null);
+  const [executandoScraping, setExecutandoScraping] = useState(false);
 
   const diasSemana = [
     { id: 'dom', label: 'D' }, { id: 'seg', label: 'S' }, { id: 'ter', label: 'T' },
@@ -298,6 +297,48 @@ export default function AdminDashboard() {
   const lidarComSelecionarTodasScraping = (e) => {
     if (e.target.checked) setEmpresasScraping(listaEmpresas.map(emp => emp.id));
     else setEmpresasScraping([]);
+  };
+
+  // Dispara o scraper agora para as empresas selecionadas (ou para as alvo
+  // salvas no banco, se a lista estiver vazia). Resultado vai pro console
+  // e pra exibição inline — sem persistência.
+  const handleExecutarScrapingAgora = async () => {
+    setExecutandoScraping(true);
+    setUltimaExecucao(null);
+    setMensagemScraping('Executando o robô… isso pode levar de 15s a alguns minutos por empresa.');
+
+    try {
+      const resposta = await fetch('http://localhost:8000/api/admin/scraping/executar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ empresas_ids: empresasScraping, adultos: 2 }),
+      });
+      const dados = await resposta.json();
+
+      if (!resposta.ok) {
+        setMensagemScraping(dados.detail || 'Erro ao executar o robô.');
+        console.error('[scraping] erro:', dados);
+        return;
+      }
+
+      console.log('[scraping] resultado completo:', dados);
+      console.table(dados.resultados.map(r => ({
+        empresa: r.empresa_nome,
+        sucesso: r.sucesso,
+        preco_diaria: r.dados?.preco_diaria || '-',
+        preco_total: r.dados?.preco_total || '-',
+        moeda: r.dados?.moeda || '-',
+        observacao: r.dados?.observacao || r.erro || '-',
+      })));
+
+      setUltimaExecucao(dados);
+      setMensagemScraping(`Concluído: ${dados.resultados.filter(r => r.sucesso).length}/${dados.total} com sucesso. Veja o console (F12) para o JSON completo.`);
+    } catch (error) {
+      setMensagemScraping('Erro de conexão com o servidor.');
+      console.error('[scraping] exceção:', error);
+    } finally {
+      setExecutandoScraping(false);
+    }
   };
 
   const handleSalvarConfigScraping = async (e) => {
@@ -724,42 +765,76 @@ export default function AdminDashboard() {
                 </form>
               </div>
 
-              {/* COLUNA DIREITA: LOGS E STATUS */}
+              {/* COLUNA DIREITA: EXECUTAR AGORA + RESULTADO DA ÚLTIMA RODADA */}
               <div>
                 <div className="bg-white p-6 rounded-lg shadow mb-6">
-                  <h2 className="text-xl font-semibold text-gray-800 mb-4 border-b pb-2">Status do Serviço</h2>
-                  <div className="flex items-center space-x-3">
-                    <div className="w-4 h-4 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="font-semibold text-gray-700">Robô Ativo (Aguardando próximo ciclo)</span>
-                  </div>
+                  <h2 className="text-xl font-semibold text-gray-800 mb-2 border-b pb-2">Executar Robô Manualmente</h2>
+                  <p className="text-sm text-gray-600 mt-3">
+                    Roda o scraper agora para as empresas selecionadas ao lado.
+                    Se nada estiver marcado, usa as empresas salvas na configuração.
+                    Os resultados aparecem aqui embaixo e também no <strong>Console do navegador (F12)</strong>.
+                  </p>
+                  <p className="text-xs text-gray-500 mt-2 italic">
+                    Pode demorar de 15s a alguns minutos (Booking + desafio anti-bot).
+                  </p>
+                  <button
+                    type="button"
+                    onClick={handleExecutarScrapingAgora}
+                    disabled={executandoScraping}
+                    className={`mt-4 w-full px-4 py-3 rounded-md font-bold shadow-md text-white ${executandoScraping ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-700 hover:bg-green-800'}`}
+                  >
+                    {executandoScraping ? 'Executando…' : '▶ Executar Agora'}
+                  </button>
                 </div>
 
                 <div className="bg-white rounded-lg shadow overflow-hidden">
                   <div className="p-4 bg-gray-50 border-b">
-                    <h2 className="text-lg font-semibold text-gray-800">Últimas Execuções (Logs)</h2>
+                    <h2 className="text-lg font-semibold text-gray-800">Resultado da Última Execução</h2>
+                    {ultimaExecucao && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        Check-in {ultimaExecucao.checkin} → Check-out {ultimaExecucao.checkout} · {ultimaExecucao.adultos} adulto(s)
+                      </p>
+                    )}
                   </div>
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead className="bg-gray-100">
-                      <tr>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Data/Hora</th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Detalhes</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-200">
-                      {logsScraping.map((log) => (
-                        <tr key={log.id}>
-                          <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{log.data}</td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            <span className={`px-2 py-1 text-xs font-bold rounded-full ${log.status === 'Sucesso' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                              {log.status}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-gray-500">{log.detalhes}</td>
+                  {!ultimaExecucao ? (
+                    <p className="p-6 text-sm text-gray-500 italic">
+                      Nenhuma execução nesta sessão ainda. Clique em "Executar Agora" para rodar o robô.
+                    </p>
+                  ) : (
+                    <table className="min-w-full divide-y divide-gray-200">
+                      <thead className="bg-gray-100">
+                        <tr>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Empresa</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Diária / Total</th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Obs.</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="bg-white divide-y divide-gray-200">
+                        {ultimaExecucao.resultados.map((r) => (
+                          <tr key={r.empresa_id}>
+                            <td className="px-4 py-3 text-sm text-gray-700 font-medium">{r.empresa_nome}</td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span className={`px-2 py-1 text-xs font-bold rounded-full ${r.sucesso ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                {r.sucesso ? 'Sucesso' : 'Falha'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">
+                              {r.dados?.preco_diaria ? (
+                                <>
+                                  <strong>{r.dados.moeda} {r.dados.preco_diaria}</strong>
+                                  <span className="text-gray-500"> / {r.dados.moeda} {r.dados.preco_total}</span>
+                                </>
+                              ) : '-'}
+                            </td>
+                            <td className="px-4 py-3 text-xs text-gray-500">
+                              {r.dados?.observacao || r.erro || '-'}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               </div>
 
