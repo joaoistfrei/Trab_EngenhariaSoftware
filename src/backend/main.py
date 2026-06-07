@@ -93,6 +93,46 @@ class ExecutarScrapingRequest(BaseModel):
 SCRAPER_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scraper"))
 SCRAPER_BIN = os.getenv("SCRAPER_BIN", os.path.join(SCRAPER_DIR, "scraper"))
 
+# Integração Google Sheets — opcional. Se GOOGLE_SHEET_URL estiver vazia, o
+# envio é silenciosamente pulado (a execução do scraping segue normal).
+GOOGLE_SHEET_URL = os.getenv("GOOGLE_SHEET_URL", "").strip()
+GOOGLE_CREDENTIALS_PATH = os.getenv("GOOGLE_CREDENTIALS_PATH", "").strip()
+
+# Ordem fixa de colunas escritas na planilha. A linha 1 da planilha deve
+# conter o cabeçalho correspondente (criado pelo usuário); append_rows()
+# começa a escrever a partir da primeira linha vazia, preservando o header.
+PLANILHA_COLUNAS = [
+    "Data execução", "ID empresa", "Nome empresa", "URL hotel",
+    "Check-in", "Check-out", "Adultos", "Moeda",
+    "Preço diária", "Preço total", "Preço bruto",
+    "Observação", "Sucesso", "Erro",
+]
+
+def _enviar_planilha(linhas: List[list]) -> dict:
+    """Anexa linhas à 1ª aba da planilha em GOOGLE_SHEET_URL, preservando o cabeçalho.
+
+    Devolve {"enviado": bool, "linhas": int, "erro": Optional[str]}.
+    Pula silenciosamente quando GOOGLE_SHEET_URL não está configurada.
+    """
+    if not GOOGLE_SHEET_URL:
+        return {"enviado": False, "linhas": 0, "erro": None}
+    if not linhas:
+        return {"enviado": False, "linhas": 0, "erro": None}
+    if not GOOGLE_CREDENTIALS_PATH or not os.path.isfile(GOOGLE_CREDENTIALS_PATH):
+        return {
+            "enviado": False, "linhas": 0,
+            "erro": "GOOGLE_CREDENTIALS_PATH não aponta para um arquivo de service account válido",
+        }
+    try:
+        import gspread
+        gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
+        ws = gc.open_by_url(GOOGLE_SHEET_URL).sheet1
+        # append_rows posiciona a partir da 1ª linha vazia → header (linha 1) intocado.
+        ws.append_rows(linhas, value_input_option="USER_ENTERED")
+        return {"enviado": True, "linhas": len(linhas), "erro": None}
+    except Exception as e:
+        return {"enviado": False, "linhas": 0, "erro": f"{type(e).__name__}: {e}"}
+
 def _rodar_scraper(url: str, checkin: str, checkout: str, adultos: int, timeout_seg: int = 120):
     """Invoca o scraper Go pra uma URL do Booking e devolve (dados_json_ou_None, stderr)."""
     if os.path.exists(SCRAPER_BIN) and os.access(SCRAPER_BIN, os.X_OK):
@@ -599,12 +639,36 @@ def executar_scraping(req: ExecutarScrapingRequest):
             "dados": dados,
         })
 
+    # Monta as linhas na ordem definida por PLANILHA_COLUNAS e envia em batch.
+    hoje_iso = date.today().isoformat()
+    linhas_planilha = []
+    for r in resultados:
+        d = r.get("dados") or {}
+        linhas_planilha.append([
+            hoje_iso,
+            r["empresa_id"],
+            r["empresa_nome"],
+            d.get("url_hotel", ""),
+            d.get("checkin", ci),
+            d.get("checkout", co),
+            d.get("adultos", req.adultos),
+            d.get("moeda", ""),
+            d.get("preco_diaria", ""),
+            d.get("preco_total", ""),
+            d.get("preco_bruto", ""),
+            d.get("observacao", ""),
+            "sim" if r["sucesso"] else "não",
+            r.get("erro") or "",
+        ])
+    envio_planilha = _enviar_planilha(linhas_planilha)
+
     return {
         "checkin": ci,
         "checkout": co,
         "adultos": req.adultos,
         "total": len(resultados),
         "resultados": resultados,
+        "planilha": envio_planilha,
     }
 
 @app.get("/api/admin/scraping/logs")

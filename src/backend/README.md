@@ -35,6 +35,8 @@ O Dockerfile aqui é **multi-stage**:
 | `DB_PASSWORD` | `chimbica` | |
 | `SCRAPER_BIN` | `../scraper/scraper` | caminho do binário Go |
 | `CHROMIUM_PATH` | `/usr/bin/chromium` | repassado ao scraper |
+| `GOOGLE_SHEET_URL` | vazio (envio desligado) | URL da planilha do Google que recebe os preços |
+| `GOOGLE_CREDENTIALS_PATH` | `/run/secrets/google-service-account.json` (compose) | caminho do JSON de service account (Sheets API) |
 
 ## Rotas (resumo)
 
@@ -65,7 +67,7 @@ Documentação interativa em `http://localhost:8000/docs`.
 ### Scraping (admin)
 - `POST /api/admin/scraping/config` — persiste regra de agendamento + empresas alvo. **Sem scheduler real ainda** — só guarda no banco.
 - `GET /api/admin/scraping/logs` — últimos 50 logs.
-- `POST /api/admin/scraping/executar` — dispara o robô **agora** pras empresas no body (ou pras configuradas, se body vazio). Roda o scraper Go em série e devolve `{checkin, checkout, adultos, total, resultados:[...]}`. **Não persiste** — destino futuro é Google Sheets.
+- `POST /api/admin/scraping/executar` — dispara o robô **agora** pras empresas no body (ou pras configuradas, se body vazio). Roda o scraper Go em série, anexa uma linha por empresa na planilha em `GOOGLE_SHEET_URL` (se configurada) e devolve `{checkin, checkout, adultos, total, resultados:[...], planilha:{enviado, linhas, erro}}`. Veja [Integração Google Sheets](#integração-google-sheets) na raiz do repo.
 
 ## Notas que não dá pra adivinhar lendo o código
 
@@ -73,3 +75,5 @@ Documentação interativa em `http://localhost:8000/docs`.
 - **`scraping_logs` × `logs_scraping`.** Existem as duas tabelas no schema; só `scraping_logs` é usada. Não chame a errada.
 - **DB_CONFIG hardcoded com senha em texto puro.** Aceitável neste projeto escolar — não logue ou ecoe esse dict em respostas.
 - **Cascade no SQL.** `formulario_empresa` e `scraping_empresas_alvo` têm `ON DELETE CASCADE`. As rotas de DELETE só apagam o pai.
+- **Sheets é best-effort, nunca derruba o scraping.** `_enviar_planilha` engole exceções e devolve `{enviado:false, erro:"..."}` na resposta. Se `GOOGLE_SHEET_URL` está vazia o envio é pulado em silêncio (sem erro). Sem retries — uma falha intermitente da API perde aquela rodada; consultar `planilha.erro` na resposta.
+- **Ordem das colunas é fixada em `PLANILHA_COLUNAS`.** Mudou aqui, tem que atualizar o cabeçalho da planilha (linha 1) na mesma ordem.

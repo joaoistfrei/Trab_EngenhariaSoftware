@@ -4,3 +4,5 @@ psycopg2-binary
 passlib[bcrypt]
 bcrypt==3.2.2
 pydantic
+gspread
+google-auth

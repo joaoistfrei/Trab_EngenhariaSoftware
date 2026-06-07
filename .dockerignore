@@ -34,3 +34,6 @@ data/processed/*
 # Docs internos
 CLAUDE.md
 .claude
+
+# Credenciais — só são usadas via bind mount no compose, não vão pra imagem
+secrets

@@ -28,3 +28,7 @@ Thumbs.db
 # Data outputs that are usually generated
 data/processed/*.csv
 data/processed/*.parquet
+
+# Credenciais (service account do Google etc.) — manter só .gitkeep
+secrets/*
+!secrets/.gitkeep
