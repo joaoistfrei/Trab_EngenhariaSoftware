@@ -34,9 +34,9 @@ services:
       DB_NAME: olimpia_turismo
       DB_USER: postgres
       DB_PASSWORD: chimbica
-      # Integração Google Sheets — vazias por default, lidas do .env do host.
-      # Se GOOGLE_SHEET_URL ficar vazia, o backend pula o envio sem erro.
-      GOOGLE_SHEET_URL: ${GOOGLE_SHEET_URL:-}
+      # Integração Google Sheets. Pra ativar no compose, troque a URL abaixo
+      # pela da sua planilha. Vazia = envio desligado (scraping segue normal).
+      GOOGLE_SHEET_URL: ""
       GOOGLE_CREDENTIALS_PATH: /run/secrets/google-service-account.json
     ports:
       - "8000:8000"

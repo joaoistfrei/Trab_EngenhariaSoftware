@@ -101,8 +101,6 @@ Todas têm fallback pros valores de dev. Só precisa setar em Docker / produçã
 | `GOOGLE_SHEET_URL` | vazio (envio desligado) | backend — URL da planilha que recebe os preços |
 | `GOOGLE_CREDENTIALS_PATH` | `/run/secrets/google-service-account.json` (no compose) | backend — caminho do JSON do service account |
 
-Há um [`.env.example`](.env.example) com os campos prontos pra você copiar pra `.env`.
-
 ## Integração com Google Sheets
 
 Após cada execução do robô (`POST /api/admin/scraping/executar`), o backend anexa uma linha por empresa no fim da planilha apontada por `GOOGLE_SHEET_URL`. A linha 1 da planilha é tratada como cabeçalho — o append começa na primeira linha vazia, então o header fica intocado.
@@ -116,8 +114,10 @@ Após cada execução do robô (`POST /api/admin/scraping/executar`), o backend 
 1. No [Google Cloud Console](https://console.cloud.google.com/) crie um projeto, habilite a **Google Sheets API** e crie um **Service Account**. Gere uma chave JSON e baixe.
 2. Salve esse JSON em `./secrets/google-service-account.json` na raiz do repo (o diretório está gitignored).
 3. Abra sua planilha no Google Sheets → **Compartilhar** → adicione o `client_email` do JSON como **Editor**.
-4. Copie a URL da planilha pra `GOOGLE_SHEET_URL` no `.env` da raiz do repo.
-5. `docker compose up` — o backend mostra `planilha.enviado: true` na resposta do `executar` se deu certo.
+4. Configure a URL da planilha em `GOOGLE_SHEET_URL`:
+   - **Docker:** edite o `docker-compose.yml` e troque `GOOGLE_SHEET_URL: ""` pela URL da sua planilha.
+   - **Local (sem Docker):** exporte no shell antes de subir o uvicorn — `export GOOGLE_SHEET_URL="https://docs.google.com/spreadsheets/d/..."`.
+5. Suba o backend (`docker compose up` ou `uvicorn ...`) — a resposta de `POST /api/admin/scraping/executar` mostra `planilha.enviado: true` se deu certo.
 
 Se `GOOGLE_SHEET_URL` ficar vazia, o envio é silenciosamente pulado e o scraping segue normal — útil pra dev local sem configurar nada.
 
