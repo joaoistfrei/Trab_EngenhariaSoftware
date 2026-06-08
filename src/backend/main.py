@@ -3,13 +3,19 @@ import secrets
 import subprocess
 import json
 import os
-from datetime import date, timedelta
+import calendar
+import logging
+import threading
+import time
+from datetime import date, datetime, timedelta
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from passlib.context import CryptContext
 import psycopg2
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
+
+logger = logging.getLogger("turismo.scraping")
 
 app = FastAPI()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -577,20 +583,24 @@ def salvar_config_scraping(req: ConfigScrapingRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Executa o scraper agora pra todas as empresas alvo (ou pra uma lista
-# explícita no body). Não grava nada em banco — devolve o JSON pro frontend
-# imprimir no console. Próximo passo: enviar pra Google Sheets.
-@app.post("/api/admin/scraping/executar")
-def executar_scraping(req: ExecutarScrapingRequest):
-    try:
-        conexao = psycopg2.connect(**DB_CONFIG)
-        cursor = conexao.cursor()
+# ----------------------------------------------------
+# 12.1 EXECUÇÃO DO SCRAPING — helpers reusados por route manual e scheduler
+# ----------------------------------------------------
+# Lock global pra evitar duas execuções concorrentes (manual + agendada).
+# Cada rodada do scraper sobe Chromium próprio, então paralelizar gasta RAM
+# desnecessariamente e pode atropelar o anti-bot do Booking.
+_scraping_lock = threading.Lock()
 
-        if req.empresas_ids:
+def _carregar_empresas_alvo(empresas_ids: Optional[List[int]]) -> List[tuple]:
+    """Carrega (id, nome, url_booking) das empresas — explícitas ou as configuradas."""
+    conexao = psycopg2.connect(**DB_CONFIG)
+    cursor = conexao.cursor()
+    try:
+        if empresas_ids:
             cursor.execute(
                 "SELECT id, nome, url_booking FROM usuarios "
                 "WHERE id = ANY(%s) AND role = 'empresario'",
-                (req.empresas_ids,),
+                (empresas_ids,),
             )
         else:
             cursor.execute(
@@ -598,9 +608,80 @@ def executar_scraping(req: ExecutarScrapingRequest):
                 "JOIN scraping_empresas_alvo a ON a.empresa_id = u.id "
                 "WHERE u.role = 'empresario'"
             )
-        empresas = cursor.fetchall()
+        return cursor.fetchall()
+    finally:
         cursor.close()
         conexao.close()
+
+def _rodar_scraping_em_empresas(empresas: List[tuple], checkin: Optional[str], checkout: Optional[str], adultos: int) -> dict:
+    """Roda o scraper Go em série pra cada empresa e devolve o dict de resposta."""
+    hoje = date.today()
+    ci = checkin or (hoje + timedelta(days=1)).isoformat()
+    co = checkout or (hoje + timedelta(days=2)).isoformat()
+
+    resultados = []
+    for emp_id, nome, url_booking in empresas:
+        if not url_booking:
+            resultados.append({
+                "empresa_id": emp_id, "empresa_nome": nome,
+                "sucesso": False, "erro": "empresa não tem url_booking cadastrada",
+                "dados": None,
+            })
+            continue
+        dados, erro = _rodar_scraper(url_booking, ci, co, adultos)
+        tem_preco = bool(dados and (dados.get("preco_diaria") or dados.get("preco_total")))
+        resultados.append({
+            "empresa_id": emp_id, "empresa_nome": nome,
+            "sucesso": tem_preco, "erro": erro or None, "dados": dados,
+        })
+
+    hoje_iso = date.today().isoformat()
+    linhas_planilha = []
+    for r in resultados:
+        d = r.get("dados") or {}
+        linhas_planilha.append([
+            hoje_iso, r["empresa_id"], r["empresa_nome"],
+            d.get("url_hotel", ""), d.get("checkin", ci), d.get("checkout", co),
+            d.get("adultos", adultos), d.get("moeda", ""),
+            d.get("preco_diaria", ""), d.get("preco_total", ""), d.get("preco_bruto", ""),
+            d.get("observacao", ""), "sim" if r["sucesso"] else "não", r.get("erro") or "",
+        ])
+    envio_planilha = _enviar_planilha(linhas_planilha)
+
+    return {
+        "checkin": ci, "checkout": co, "adultos": adultos,
+        "total": len(resultados), "resultados": resultados,
+        "planilha": envio_planilha,
+    }
+
+def _gravar_log_scraping(origem: str, resultado: Optional[dict] = None, erro: Optional[str] = None):
+    """Grava uma linha em scraping_logs. `origem` é 'Manual' ou 'Agendado'."""
+    if erro:
+        status, detalhes = "erro", f"[{origem}] {erro}"
+    else:
+        ok = sum(1 for r in resultado["resultados"] if r["sucesso"])
+        total = resultado["total"]
+        status = "sucesso" if ok == total and total > 0 else ("erro" if ok == 0 else "sucesso")
+        detalhes = f"[{origem}] {ok}/{total} empresas OK · check-in {resultado['checkin']} → check-out {resultado['checkout']}"
+        if resultado.get("planilha", {}).get("erro"):
+            detalhes += f" · planilha: {resultado['planilha']['erro']}"
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        cursor.execute("INSERT INTO scraping_logs (status, detalhes) VALUES (%s, %s)", (status, detalhes))
+        conexao.commit()
+        cursor.close()
+        conexao.close()
+    except Exception:
+        # Log é best-effort — não derruba o caller se o banco piscar.
+        logger.exception("Falha gravando log de scraping")
+
+# Executa o scraper agora pras empresas no body (ou pras configuradas em
+# scraping_empresas_alvo, se body vazio). Grava resultado em scraping_logs.
+@app.post("/api/admin/scraping/executar")
+def executar_scraping(req: ExecutarScrapingRequest):
+    try:
+        empresas = _carregar_empresas_alvo(req.empresas_ids or None)
     except psycopg2.Error as e:
         raise HTTPException(status_code=500, detail=f"Erro no banco: {str(e)}")
 
@@ -610,66 +691,168 @@ def executar_scraping(req: ExecutarScrapingRequest):
             detail="Nenhuma empresa para raspar. Selecione empresas na configuração do robô ou envie empresas_ids.",
         )
 
-    # Datas padrão: amanhã / depois de amanhã
+    if not _scraping_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="Já existe uma execução do robô em andamento. Tente novamente em alguns instantes.",
+        )
+    try:
+        resultado = _rodar_scraping_em_empresas(empresas, req.checkin, req.checkout, req.adultos)
+    finally:
+        _scraping_lock.release()
+
+    _gravar_log_scraping("Manual", resultado=resultado)
+    return resultado
+
+# ----------------------------------------------------
+# 12.2 SCHEDULER — thread daemon que dispara o robô conforme scraping_config
+# ----------------------------------------------------
+# Granularidade do agendamento é em dias, então 60s de tick é suficiente.
+# Override via env pra testar mais rápido (ex.: 5s em dev).
+_SCHEDULER_TICK_SEG = int(os.getenv("SCRAPING_SCHEDULER_TICK_SEG", "60"))
+# Permite desligar o scheduler sem mexer no código (ex.: rodar uvicorn local
+# sem disparos automáticos).
+_SCHEDULER_ATIVO = os.getenv("SCRAPING_SCHEDULER_ATIVO", "true").lower() not in ("0", "false", "no", "off")
+
+_DIA_SEMANA_INDEX = {"seg": 0, "ter": 1, "qua": 2, "qui": 3, "sex": 4, "sab": 5, "dom": 6}
+
+def _carregar_config_agendamento() -> Optional[dict]:
+    """Lê a única linha de scraping_config + lista de empresas alvo. None se nada salvo."""
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        cursor.execute("SELECT repetir_a_cada, unidade_tempo, dias_semana, dia_mes FROM scraping_config LIMIT 1")
+        row = cursor.fetchone()
+        if not row:
+            cursor.close()
+            conexao.close()
+            return None
+        repetir, unidade, dias_csv, dia_mes = row
+        cursor.execute("SELECT empresa_id FROM scraping_empresas_alvo")
+        empresas_ids = [r[0] for r in cursor.fetchall()]
+        cursor.close()
+        conexao.close()
+        return {
+            "repetir_a_cada": repetir,
+            "unidade_tempo": unidade,
+            "dias_semana": [d.strip() for d in (dias_csv or "").split(",") if d.strip()],
+            "dia_mes": dia_mes,
+            "empresas_ids": empresas_ids,
+        }
+    except Exception:
+        logger.exception("Falha lendo scraping_config")
+        return None
+
+def _ultima_execucao() -> Optional[date]:
+    """Data da execução mais recente registrada em scraping_logs, ou None."""
+    try:
+        conexao = psycopg2.connect(**DB_CONFIG)
+        cursor = conexao.cursor()
+        cursor.execute("SELECT data_execucao FROM scraping_logs ORDER BY data_execucao DESC LIMIT 1")
+        row = cursor.fetchone()
+        cursor.close()
+        conexao.close()
+        if not row:
+            return None
+        return row[0].date() if isinstance(row[0], datetime) else row[0]
+    except Exception:
+        logger.exception("Falha lendo última execução")
+        return None
+
+def _deve_executar_hoje(config: dict, hoje: date, ultima: Optional[date]) -> bool:
+    """Decide se o robô deve rodar hoje, dado o config e a última execução.
+
+    Regra geral: nunca roda duas vezes no mesmo dia (dedupe por `data_execucao`).
+    Pra cada unidade aplicamos o `repetir_a_cada` como espaçamento mínimo:
+    - 'dia': dias corridos desde a última execução.
+    - 'semana': hoje deve cair em `dias_semana` e a diferença em semanas ISO
+      desde a última execução tem que ser >= N.
+    - 'mes': hoje deve ser `dia_mes` (com fallback pro último dia do mês
+      quando o alvo > último dia, ex.: 31 em fev). Diferença em meses >= N.
+    """
+    if not config.get("empresas_ids"):
+        return False
+    if ultima == hoje:
+        return False
+
+    n = max(1, config.get("repetir_a_cada") or 1)
+    unidade = config.get("unidade_tempo")
+
+    if unidade == "dia":
+        if ultima is None:
+            return True
+        return (hoje - ultima).days >= n
+
+    if unidade == "semana":
+        dias_idx = {_DIA_SEMANA_INDEX[d] for d in config["dias_semana"] if d in _DIA_SEMANA_INDEX}
+        if not dias_idx or hoje.weekday() not in dias_idx:
+            return False
+        if ultima is None:
+            return True
+        ano_u, sem_u, _ = ultima.isocalendar()
+        ano_h, sem_h, _ = hoje.isocalendar()
+        return (ano_h - ano_u) * 52 + (sem_h - sem_u) >= n
+
+    if unidade == "mes":
+        alvo = config.get("dia_mes") or 1
+        ultimo_dia = calendar.monthrange(hoje.year, hoje.month)[1]
+        # Se o dia configurado não existe neste mês, dispara no último dia.
+        dia_efetivo = min(alvo, ultimo_dia)
+        if hoje.day != dia_efetivo:
+            return False
+        if ultima is None:
+            return True
+        return (hoje.year - ultima.year) * 12 + (hoje.month - ultima.month) >= n
+
+    return False
+
+def _tick_scheduler():
+    """Uma passada do scheduler: checa config, decide, dispara se for o caso."""
+    config = _carregar_config_agendamento()
+    if not config:
+        return
     hoje = date.today()
-    ci = req.checkin or (hoje + timedelta(days=1)).isoformat()
-    co = req.checkout or (hoje + timedelta(days=2)).isoformat()
+    ultima = _ultima_execucao()
+    if not _deve_executar_hoje(config, hoje, ultima):
+        return
+    # Se o lock está tomado (manual rodando), pula este tick — o próximo tenta
+    # de novo. Não esperamos pra não acumular threads bloqueadas.
+    if not _scraping_lock.acquire(blocking=False):
+        return
+    try:
+        logger.info("Scheduler: disparando scraping agendado (%s empresas alvo)", len(config["empresas_ids"]))
+        try:
+            empresas = _carregar_empresas_alvo(None)
+        except psycopg2.Error as e:
+            _gravar_log_scraping("Agendado", erro=f"erro no banco ao carregar empresas: {e}")
+            return
+        if not empresas:
+            _gravar_log_scraping("Agendado", erro="nenhuma empresa configurada como alvo")
+            return
+        try:
+            resultado = _rodar_scraping_em_empresas(empresas, None, None, 2)
+            _gravar_log_scraping("Agendado", resultado=resultado)
+        except Exception as e:
+            logger.exception("Erro executando scraping agendado")
+            _gravar_log_scraping("Agendado", erro=f"falha geral: {e}")
+    finally:
+        _scraping_lock.release()
 
-    resultados = []
-    for emp_id, nome, url_booking in empresas:
-        if not url_booking:
-            resultados.append({
-                "empresa_id": emp_id,
-                "empresa_nome": nome,
-                "sucesso": False,
-                "erro": "empresa não tem url_booking cadastrada",
-                "dados": None,
-            })
-            continue
+def _loop_scheduler():
+    logger.info("Scheduler do scraping iniciado (tick=%ss)", _SCHEDULER_TICK_SEG)
+    while True:
+        try:
+            _tick_scheduler()
+        except Exception:
+            logger.exception("Erro inesperado no tick do scheduler")
+        time.sleep(_SCHEDULER_TICK_SEG)
 
-        dados, erro = _rodar_scraper(url_booking, ci, co, req.adultos)
-        # Sucesso = veio um preço (diária ou total). A observação pode existir
-        # mesmo em sucesso (ex.: data ajustada porque a original tava lotada).
-        tem_preco = bool(dados and (dados.get("preco_diaria") or dados.get("preco_total")))
-        resultados.append({
-            "empresa_id": emp_id,
-            "empresa_nome": nome,
-            "sucesso": tem_preco,
-            "erro": erro or None,
-            "dados": dados,
-        })
-
-    # Monta as linhas na ordem definida por PLANILHA_COLUNAS e envia em batch.
-    hoje_iso = date.today().isoformat()
-    linhas_planilha = []
-    for r in resultados:
-        d = r.get("dados") or {}
-        linhas_planilha.append([
-            hoje_iso,
-            r["empresa_id"],
-            r["empresa_nome"],
-            d.get("url_hotel", ""),
-            d.get("checkin", ci),
-            d.get("checkout", co),
-            d.get("adultos", req.adultos),
-            d.get("moeda", ""),
-            d.get("preco_diaria", ""),
-            d.get("preco_total", ""),
-            d.get("preco_bruto", ""),
-            d.get("observacao", ""),
-            "sim" if r["sucesso"] else "não",
-            r.get("erro") or "",
-        ])
-    envio_planilha = _enviar_planilha(linhas_planilha)
-
-    return {
-        "checkin": ci,
-        "checkout": co,
-        "adultos": req.adultos,
-        "total": len(resultados),
-        "resultados": resultados,
-        "planilha": envio_planilha,
-    }
+@app.on_event("startup")
+def _iniciar_scheduler():
+    if not _SCHEDULER_ATIVO:
+        logger.info("Scheduler do scraping desligado via SCRAPING_SCHEDULER_ATIVO=false")
+        return
+    threading.Thread(target=_loop_scheduler, daemon=True, name="scraping-scheduler").start()
 
 @app.get("/api/admin/scraping/logs")
 def listar_logs_scraping():

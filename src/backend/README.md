@@ -37,6 +37,8 @@ O Dockerfile aqui é **multi-stage**:
 | `CHROMIUM_PATH` | `/usr/bin/chromium` | repassado ao scraper |
 | `GOOGLE_SHEET_URL` | vazio (envio desligado) | URL da planilha do Google que recebe os preços |
 | `GOOGLE_CREDENTIALS_PATH` | `/run/secrets/google-service-account.json` (compose) | caminho do JSON de service account (Sheets API) |
+| `SCRAPING_SCHEDULER_ATIVO` | `true` | `false`/`0`/`no` desliga a thread do agendador (útil pra rodar local sem disparos automáticos) |
+| `SCRAPING_SCHEDULER_TICK_SEG` | `60` | intervalo (em segundos) entre checagens do agendador |
 
 ## Rotas (resumo)
 
@@ -65,9 +67,9 @@ Documentação interativa em `http://localhost:8000/docs`.
 - `DELETE /api/admin/formularios/{id}` — exclui.
 
 ### Scraping (admin)
-- `POST /api/admin/scraping/config` — persiste regra de agendamento + empresas alvo. **Sem scheduler real ainda** — só guarda no banco.
-- `GET /api/admin/scraping/logs` — últimos 50 logs.
-- `POST /api/admin/scraping/executar` — dispara o robô **agora** pras empresas no body (ou pras configuradas, se body vazio). Roda o scraper Go em série, anexa uma linha por empresa na planilha em `GOOGLE_SHEET_URL` (se configurada) e devolve `{checkin, checkout, adultos, total, resultados:[...], planilha:{enviado, linhas, erro}}`. Veja [Integração Google Sheets](#integração-google-sheets) na raiz do repo.
+- `POST /api/admin/scraping/config` — persiste regra de agendamento + empresas alvo. A thread do scheduler relê isso a cada tick, então a mudança vale na próxima checagem (sem restart).
+- `GET /api/admin/scraping/logs` — últimos 50 logs (manuais e agendados, prefixados em `detalhes` por `[Manual]` / `[Agendado]`).
+- `POST /api/admin/scraping/executar` — dispara o robô **agora** pras empresas no body (ou pras configuradas, se body vazio). Roda o scraper Go em série, anexa uma linha por empresa na planilha em `GOOGLE_SHEET_URL` (se configurada) e devolve `{checkin, checkout, adultos, total, resultados:[...], planilha:{enviado, linhas, erro}}`. Veja [Integração Google Sheets](#integração-google-sheets) na raiz do repo. Retorna **409** se uma execução (manual ou agendada) já está em andamento.
 
 ## Notas que não dá pra adivinhar lendo o código
 
@@ -77,3 +79,5 @@ Documentação interativa em `http://localhost:8000/docs`.
 - **Cascade no SQL.** `formulario_empresa` e `scraping_empresas_alvo` têm `ON DELETE CASCADE`. As rotas de DELETE só apagam o pai.
 - **Sheets é best-effort, nunca derruba o scraping.** `_enviar_planilha` engole exceções e devolve `{enviado:false, erro:"..."}` na resposta. Se `GOOGLE_SHEET_URL` está vazia o envio é pulado em silêncio (sem erro). Sem retries — uma falha intermitente da API perde aquela rodada; consultar `planilha.erro` na resposta.
 - **Ordem das colunas é fixada em `PLANILHA_COLUNAS`.** Mudou aqui, tem que atualizar o cabeçalho da planilha (linha 1) na mesma ordem.
+- **Scheduler é uma thread daemon no processo do FastAPI.** Sobe no `on_event("startup")` e tica a cada `SCRAPING_SCHEDULER_TICK_SEG` segundos (default 60). Não há coordenação entre instâncias — se você rodar 2 réplicas do backend, vão tentar disparar em paralelo. Pra essa escala (1 instância), o lock `_scraping_lock` já basta. **Dedupe é por data** (`scraping_logs.data_execucao`): nunca roda duas vezes no mesmo dia, independente da unidade configurada.
+- **Decisão de "deve rodar hoje" não tem hora do dia.** A primeira vez que o tick vê uma janela válida no dia, dispara. Pra controlar horário específico precisa estender o schema (`scraping_config.hora`) — não está implementado.

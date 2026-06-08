@@ -131,8 +131,8 @@ Se `GOOGLE_SHEET_URL` ficar vazia, o envio é silenciosamente pulado e o scrapin
 
 ## Próximos passos
 
-- Scheduler real pro robô (hoje só dispara via botão "Executar Agora").
 - Build de produção do frontend (nginx) + deploy.
+- Controle de horário do dia no agendamento (hoje o robô dispara assim que o tick do scheduler detecta um dia válido).
 
 ## Licença
 
